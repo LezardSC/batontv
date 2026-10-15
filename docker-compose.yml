@@ -1,0 +1,281 @@
+services:
+  qbittorrent:
+    image: lscr.io/linuxserver/qbittorrent:latest
+    container_name: qbittorrent
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - WEBUI_PORT=8080
+    volumes:
+      - ./qbittorrent/config:/config
+      - /mnt/hdd1/data:/data
+    restart: unless-stopped
+    network_mode: service:gluetun
+    depends_on:
+      gluetun:
+        condition: service_healthy
+        restart: true
+
+  prowlarr:
+    image: lscr.io/linuxserver/prowlarr:latest
+    container_name: prowlarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+    volumes:
+      - ./prowlarr/config:/config
+      - ./prowlarr/backup:/data/backup
+    ports:
+      - 9696:9696
+    restart: unless-stopped
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+    volumes:
+      - ./radarr/config:/config
+      - /mnt/hdd1/data:/data
+    ports:
+      - 7878:7878
+    restart: unless-stopped
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+    volumes:
+      - ./sonarr/config:/config
+      - /mnt/hdd1/data:/data
+    ports:
+      - 8989:8989
+    restart: unless-stopped
+
+  jellyfin:
+    image: lscr.io/linuxserver/jellyfin:latest
+    container_name: jellyfin
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+      - JELLYFIN_PublishedServerUrl=http://192.168.0.5 #optional
+    volumes:
+      - ./jellyfin/config:/config
+      - ./jellyfin/cache:/cache
+      - /mnt/hdd1/data:/data
+    ports:
+      - 8096:8096
+      - 8920:8920 #optional
+      - 7359:7359/udp #optional
+      - 1900:1900/udp #optional
+    restart: unless-stopped
+    devices:
+      - /dev/dri:/dev/dri
+    group_add:
+      - "44"     # video
+      - "105"    # render
+
+  jellyseerr:
+       image: fallenbagel/jellyseerr:latest
+       container_name: jellyseerr
+       environment:
+            - PUID=1000
+            - PGID=1000
+            - LOG_LEVEL=debug
+            - TZ=Europe/Paris
+       ports:
+            - 5055:5055
+       volumes:
+            - ./jellyseerr/config:/app/config
+       restart: unless-stopped
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+    volumes:
+      - ./bazarr/config:/config
+      - /mnt/hdd1/data:/data
+    ports:
+      - 6767:6767
+    restart: unless-stopped
+
+  nginx-proxy-manager:
+    image: 'jc21/nginx-proxy-manager:latest'
+    container_name: nginx-proxy-manager
+    environment:
+      - PUID=1000
+      - PGID=1000
+    restart: unless-stopped
+    ports:
+      - '80:80'
+      - '81:81'
+      - '443:443'
+    volumes:
+      - ./nginx-proxy-manager/data:/data
+      - ./letsencrypt:/etc/letsencrypt
+
+  jfa-go:
+    image: hrfee/jfa-go:latest
+    environment:
+      - PUID=1000
+      - PGID=1000
+    container_name: jfa-go
+    restart: unless-stopped
+    volumes:
+      - ./jfa-go:/data
+      - /etc/localtime:/etc/localtime:ro
+      - ./jellyfin:/jf
+    ports:
+      - 8057:8056
+
+  gluetun:
+    image: qmcgaw/gluetun:latest
+    container_name: gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TZ=Europe/Paris
+      - VPN_SERVICE_PROVIDER=protonvpn
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WG_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=10.2.0.2/32
+      - SERVER_COUNTRIES=Switzerland,Romania,Hungary
+      - PORT_FORWARD_ONLY=on
+      - VPN_PORT_FORWARDING=on
+      - VPN_PORT_FORWARDING_PROVIDER=protonvpn
+      - VPN_PORT_FORWARDING_UP_COMMAND=/bin/sh -c 'wget -O- --retry-connrefused --tries=30 --waitretry=5 --post-data "json={\"listen_port\":{{PORTS}}}" http://127.0.0.1:8080/api/v2/app/setPreferences 2>&1'
+      - UPDATER_PERIOD=24h
+      - BLOCK_MALICIOUS=off
+    restart: unless-stopped
+    volumes:
+      - ./gluetun/data:/gluetun
+    ports:
+      - 18101:8000   # API gluetun
+      - 18080:8080   # WebUI qBittorrent
+
+
+  portsync:
+    image: alpine:latest
+    container_name: portsync
+    network_mode: service:gluetun
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    restart: unless-stopped
+    entrypoint: >
+      sh -c "apk add --no-cache curl jq &&
+             while true; do
+               GP=$$(curl -sL http://127.0.0.1:8000/v1/portforward | jq -r '.port // empty');
+               QP=$$(curl -s http://127.0.0.1:8080/api/v2/app/preferences | jq -r '.listen_port // empty');
+               if [ -n \"$$GP\" ] && [ \"$$GP\" != \"$$QP\" ]; then
+                 echo \"sync: $$QP -> $$GP\";
+                 curl -s -d \"json={\\\"listen_port\\\":$$GP}\" http://127.0.0.1:8080/api/v2/app/setPreferences;
+               fi;
+               sleep 60;
+             done"
+
+  cross-seed:
+    image: ghcr.io/cross-seed/cross-seed:6
+    container_name: cross-seed
+    user: 1000:1000
+    volumes:
+      - ./cross-seed:/config
+      - /mnt/hdd1/data:/data
+    ports:
+      - 2468:2468
+    command: daemon
+    restart: unless-stopped
+
+  jellystat-db:
+    image: postgres:15.2
+    container_name: jellystat-db
+    shm_size: 1gb
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jellystat
+      POSTGRES_PASSWORD: ${JELLYSTAT_DB_PASSWORD}
+      POSTGRES_DB: jfstat
+    volumes:
+      - jellystat-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jellystat"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  jellystat:
+    image: cyfershepard/jellystat:latest
+    container_name: jellystat
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: jellystat
+      POSTGRES_PASSWORD: ${JELLYSTAT_DB_PASSWORD}
+      POSTGRES_IP: jellystat-db
+      POSTGRES_PORT: 5432
+      POSTGRES_DB: jfstat
+      JWT_SECRET: ${JELLYSTAT_JWT_SECRET}
+      TZ: Europe/Paris
+    volumes:
+      - ./jellystat/backup:/app/backend/backup-data
+    ports:
+      - 3000:3000
+    depends_on:
+      jellystat-db:
+        condition: service_healthy
+    logging:
+      driver: json-file
+      options:
+        max-file: '5'
+        max-size: 10m
+
+  cleanuparr:
+    image: ghcr.io/cleanuparr/cleanuparr:latest
+    container_name: cleanuparr
+    environment:
+      - PORT=11011
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Paris
+    volumes:
+      - ./cleanuparr/config:/config
+      - /mnt/hdd1/data:/data
+    ports:
+      - 11011:11011
+    restart: unless-stopped
+
+
+  unpackerr:
+    image: ghcr.io/unpackerr/unpackerr:latest
+    container_name: unpackerr
+    user: 1000:1000
+    environment:
+      - TZ=Europe/Paris
+      - UN_INTERVAL=2m
+      - UN_START_DELAY=1m
+      - UN_DELETE_DELAY=5m
+      - UN_RADARR_0_URL=http://radarr:7878
+      - UN_RADARR_0_API_KEY=${RADARR_API}
+      - UN_RADARR_0_PATHS_0=/data/downloads
+      - UN_SONARR_0_URL=http://sonarr:8989
+      - UN_SONARR_0_API_KEY=${SONARR_API}
+      - UN_SONARR_0_PATHS_0=/data/downloads
+    volumes:
+      - /mnt/hdd1/data:/data
+    restart: unless-stopped
+
+volumes:
+  jellystat-postgres:
