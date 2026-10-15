@@ -6,3 +6,5 @@
 !.gitignore
 !.env.example
 !README.md
+!docs/
+!docs/**
